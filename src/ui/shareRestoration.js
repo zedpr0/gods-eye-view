@@ -6,6 +6,11 @@ import { SHARE_VIEW_ENTITY_KINDS } from '../share/follow.js';
 import { UiLifetime } from './uiLifetime.js';
 import { followedOf } from '../data/followed.js';
 import { canvasOf } from '../render/rendererOf.js';
+
+/** `?embed=1`: another page frames the app and posts its views. */
+function framedByAnotherPage(location = globalThis.location) {
+  return new URLSearchParams(location?.search || '').get('embed') === '1';
+}
 import { isWorldTime, worldClock } from '../time/worldClock.js';
 
 // A link made away from live opens at its world time, paused. One without a
@@ -418,8 +423,10 @@ export class ShareRestoration {
         shareLayerState: this._initialShareState?.layerState || null,
         shareCreatedAtMs: this._initialShareState?.sharedAtMs ?? null,
         // Any valid camera/style share isolates recipient-local preferences,
-        // including legacy and malformed-v2 layer payloads.
-        allowLocalState: !this._initialShareState,
+        // including legacy and malformed-v2 layer payloads. A framing page
+        // (`?embed=1`) owns the layers through its posted views, so saved
+        // layers must not come back on behind them.
+        allowLocalState: !this._initialShareState && !framedByAnotherPage(),
       });
       if (this._initialShareSelectionSuperseded) {
         this._layerStateCoordinator.cancelPendingShareTracking(
