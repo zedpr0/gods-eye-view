@@ -102,6 +102,19 @@ test('explicit build inputs preserve browser-only defines, plugin order and loop
     ],
     '"MLY|1|abc"',
   );
+  // The browser learns only the exact origins that may frame it.
+  assert.equal(
+    createBrowserViteConfig({
+      embedFrameAncestors: "'self' https://a.example https://*.b.example",
+    }).define['import.meta.env.GEV_EMBED_PARENT_ORIGINS'],
+    '["https://a.example"]',
+  );
+  assert.equal(
+    createBrowserViteConfig({ embedFrameAncestors: '*' }).define[
+      'import.meta.env.GEV_EMBED_PARENT_ORIGINS'
+    ],
+    undefined,
+  );
   // A wildcard bind keeps the Host-header check; LAN names are explicit.
   for (const host of ['0.0.0.0', '::'])
     assert.deepEqual(
@@ -215,7 +228,7 @@ test('build export resolves in Node and has no browser fallback', async () => {
 });
 
 test('only embed-mode documents may be framed, and only by the allowed ancestors', async () => {
-  const { embedFramingPlugin, isEmbedDocumentRequest } =
+  const { embedFramingPlugin, embedParentOrigins, isEmbedDocumentRequest } =
     await import('../../build/embed-framing.js');
   assert.equal(isEmbedDocumentRequest('/?embed=1'), true);
   assert.equal(isEmbedDocumentRequest('/index.html?embed=1#v=2'), true);
@@ -279,6 +292,14 @@ test('only embed-mode documents may be framed, and only by the allowed ancestors
     'x-frame-options': 'DENY',
     'content-security-policy': "frame-ancestors 'none'",
   });
+  assert.deepEqual(
+    embedParentOrigins(
+      "https://a.example  'self' https: https://*.c.example https://d.example/x http://localhost:5173 https://a.example/",
+    ),
+    ['https://a.example', 'http://localhost:5173'],
+  );
+  for (const ancestors of [undefined, '', '*', 'https://a.example *'])
+    assert.deepEqual(embedParentOrigins(ancestors), []);
   // Unset, no page may frame even embed-mode documents.
   for (const ancestors of ['', '   ']) {
     const plugin = embedFramingPlugin({ ancestors });

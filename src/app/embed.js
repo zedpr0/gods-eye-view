@@ -6,6 +6,9 @@
  * shows by posting `{ type: 'gev:view', id, view }`; the app applies the view
  * through its own actions and answers `{ type: 'gev:view-applied', id, ok,
  * steps }`. It announces `{ type: 'gev:ready' }` once it can take views.
+ * When the user selects an aircraft, vessel or satellite it posts `{ type:
+ * 'gev:entity', kind, id, label, lat, lon }`, only to the exact origins
+ * `GEV_EMBED_FRAME_ANCESTORS` names.
  *
  * Annotations in a share link are drawn once the link has been restored,
  * embedded or not.
@@ -15,7 +18,7 @@ import {
   announceNavigationAuthority,
   watchCameraOwner,
 } from '../navigationPolicy.js';
-import { toRadians } from '../geo/index.js';
+import { toLonLatH, toRadians } from '../geo/index.js';
 import { t, translateKnown } from '../i18n/index.js';
 import { GOOGLE_LABEL } from '../layers/streetLevel/providers/google/policy.js';
 import { cameraOf } from '../render/rendererOf.js';
@@ -30,6 +33,21 @@ import {
 const EMBED_VIEW_MESSAGE = 'gev:view';
 const EMBED_APPLIED_MESSAGE = 'gev:view-applied';
 const EMBED_READY_MESSAGE = 'gev:ready';
+const EMBED_ENTITY_MESSAGE = 'gev:entity';
+/** The framing pages' origins, from build/embed-framing.js; none by default. */
+const PARENT_ORIGINS = import.meta.env?.GEV_EMBED_PARENT_ORIGINS ?? [];
+/** What each selectable layer's subjects are, and their ids' form. */
+const ENTITY_KINDS = {
+  flights: 'aircraft',
+  military: 'aircraft',
+  'ais-live-vessels': 'vessel',
+  satellites: 'satellite',
+};
+const ENTITY_IDS = {
+  aircraft: /^[0-9a-f]{6}$/, // ICAO 24-bit address
+  vessel: /^\d{9}$/, // MMSI
+  satellite: /^[1-9]\d{0,8}$/, // NORAD catalog number
+};
 
 const STREET_LEVEL_LAYER = 'street-level';
 const FOLLOW_LAYERS = {
@@ -266,6 +284,38 @@ export async function applyView(
 }
 
 /**
+ * The `gev:entity` message for a selection event's detail: an aircraft or
+ * satellite subject (`gev:awareness-subject-selected`) or a selected vessel's
+ * context record (`gev:entity-selected`). Null for anything else, or without
+ * a well-formed id and a position.
+ */
+export function entityMessage(detail) {
+  const kind = ENTITY_KINDS[detail?.layerId];
+  if (!kind) return null;
+  const vessel = kind === 'vessel';
+  const id = String((vessel ? detail.properties?.mmsi : detail.id) ?? '')
+    .trim()
+    .toLowerCase();
+  const point = vessel
+    ? { lat: detail.latitude, lon: detail.longitude }
+    : detail.position && toLonLatH(detail.position);
+  if (
+    !ENTITY_IDS[kind].test(id) ||
+    !Number.isFinite(point?.lat) ||
+    !Number.isFinite(point?.lon)
+  )
+    return null;
+  return {
+    type: EMBED_ENTITY_MESSAGE,
+    kind,
+    id,
+    label: String(detail.label || id),
+    lat: point.lat,
+    lon: point.lon,
+  };
+}
+
+/**
  * Install embed mode when the page asks for it, and draw any annotations the
  * opening link carries. Returns a function that removes the message handler.
  * `keepRendering({windowRef})` keeps the globe drawing in an inline panel
@@ -282,6 +332,7 @@ export function installViews({
   terrain = null,
   location = globalThis.location,
   windowRef = globalThis.window,
+  parentOrigins = PARENT_ORIGINS,
 }) {
   const ready = Promise.resolve(shell.initialRestorePromise).catch(() => {});
   const hashParams = new URLSearchParams(
@@ -506,6 +557,24 @@ export function installViews({
       );
   };
   windowRef.addEventListener('message', onMessage);
+  // The user's own pick of an aircraft, vessel or satellite goes to the
+  // framing page, and only at an origin allowed to frame the app: unlike a
+  // view's answer, nobody asked for it.
+  const onSelected = (event) => {
+    const detail = event?.detail;
+    if (detail?.layerId !== 'ais-live-vessels' && detail?.origin !== 'user')
+      return;
+    const message = entityMessage(detail);
+    if (!message || isEmbeddedInline()) return;
+    for (const origin of parentOrigins)
+      if (/^https?:\/\/[^*/]+$/.test(origin)) post(message, origin);
+  };
+  const selectionEvents = [
+    'gev:awareness-subject-selected',
+    'gev:entity-selected',
+  ];
+  for (const type of selectionEvents)
+    windowRef.addEventListener(type, onSelected);
   void ready.then(() => {
     if (!signal?.aborted) post({ type: EMBED_READY_MESSAGE });
   });
@@ -513,5 +582,7 @@ export function installViews({
     stopRendering();
     stopNavigatedRestores();
     windowRef.removeEventListener('message', onMessage);
+    for (const type of selectionEvents)
+      windowRef.removeEventListener(type, onSelected);
   };
 }

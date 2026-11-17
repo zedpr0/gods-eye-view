@@ -3,7 +3,7 @@ import cesium from 'vite-plugin-cesium';
 import vue from '@vitejs/plugin-vue';
 import { VUE_PLUGIN_OPTIONS } from './vueOptions.js';
 import { DEFAULT_ALLOWED_HOSTS, hostCheckPlugin } from './allowedHosts.js';
-import { embedFramingPlugin } from './embed-framing.js';
+import { embedFramingPlugin, embedParentOrigins } from './embed-framing.js';
 import { panelBuildPlugin } from './panel.js';
 
 /**
@@ -171,12 +171,14 @@ export function createBrowserViteConfig({
   cesiumToken,
   photonUrl,
   mapillaryToken,
+  embedFrameAncestors,
   host = 'localhost',
   port = 4173,
   allowedHosts = DEFAULT_ALLOWED_HOSTS,
   command,
 } = {}) {
   const photonSetting = photonEndpointSetting(photonUrl);
+  const parentOrigins = embedParentOrigins(embedFrameAncestors);
   return {
     plugins: [
       // First, so every API response, including a Host refusal, carries them.
@@ -257,6 +259,13 @@ export function createBrowserViteConfig({
       'import.meta.env.MAPILLARY_CLIENT_TOKEN': JSON.stringify(
         mapillaryToken ?? '',
       ),
+      // Origins only, never the raw ancestors list (build/embed-framing.js).
+      ...(parentOrigins.length
+        ? {
+            'import.meta.env.GEV_EMBED_PARENT_ORIGINS':
+              JSON.stringify(parentOrigins),
+          }
+        : {}),
     },
     build: { chunkSizeWarningLimit: 1500 },
   };

@@ -34,6 +34,33 @@ export function isEmbedDocumentRequest(url) {
   );
 }
 
+/**
+ * The exact origins (`https://host[:port]`) among the allowed ancestors: the
+ * only pages the embedded app tells what was selected (src/app/embed.js).
+ * Wildcards, schemes, paths and `'self'` name no single origin and are
+ * skipped; `*` or unset names none, so nothing is told.
+ */
+export function embedParentOrigins(ancestors = '') {
+  const sources = String(ancestors ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (sources.includes('*')) return [];
+  const origins = [];
+  for (const source of sources) {
+    let url;
+    try {
+      url = new URL(source);
+    } catch {
+      continue;
+    }
+    const exact = /^https?:$/.test(url.protocol) && !url.host.includes('*');
+    if (exact && source.replace(/\/$/, '') === url.origin)
+      origins.push(url.origin);
+  }
+  return [...new Set(origins)];
+}
+
 /** Vite plugin applying the embed framing policy on dev and preview servers. */
 export function embedFramingPlugin({
   ancestors = process.env.GEV_EMBED_FRAME_ANCESTORS || '',

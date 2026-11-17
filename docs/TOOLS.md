@@ -190,7 +190,11 @@ it, or the camera when nothing is followed or the entity is not there yet,
 since a camera flight would end the follow; then cockpit view when asked) and
 answers `{ type: 'gev:view-applied', id, ok, steps }` to the origin that
 sent the view. It posts `{ type: 'gev:ready' }` once it can take views, and
-only its parent page can send them. See `src/app/embed.js`.
+only its parent page can send them. When the user selects an aircraft, vessel
+or satellite it posts `{ type: 'gev:entity', kind, id, label, lat, lon }`
+(`kind` is `aircraft`, `vessel` or `satellite`; `id` the lowercase ICAO
+address, MMSI or NORAD number), only to the exact origins
+`GEV_EMBED_FRAME_ANCESTORS` names, never to any page. See `src/app/embed.js`.
 
 No page may frame the app by default: every document keeps
 `X-Frame-Options: DENY` and `frame-ancestors 'none'`. Setting

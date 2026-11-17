@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyView,
+  entityMessage,
   installViews,
   isEmbedded,
   panelAwareVisibility,
 } from './embed.js';
 import { LayerLifecycle } from '../data/lifecycle.js';
+import { fromDegrees } from '../geo/index.js';
 import { createView, viewToParams } from '../view/index.js';
 
 const fakeViewer = () => {
@@ -258,6 +260,124 @@ test('an embedded page takes views only from its parent and answers it', async (
     'https://host.example',
   ]);
   remove();
+});
+
+test('a picked aircraft, vessel or satellite is told only to the allowed framing origins', async () => {
+  const posted = [];
+  const parent = {
+    postMessage: (message, target) => posted.push([message, target]),
+  };
+  const windowRef = new EventTarget();
+  windowRef.parent = parent;
+  windowRef.document = { body: { classList: new Set() } };
+  windowRef.document.body.classList.add = Set.prototype.add;
+  const install = (parentOrigins) =>
+    installViews({
+      shell: { initialRestorePromise: Promise.resolve() },
+      viewer: fakeViewer(),
+      dataManager: fakeLayers(new Set()),
+      run: recorder().run,
+      location: { search: '?embed=1', hash: '' },
+      windowRef,
+      parentOrigins,
+    });
+  const select = (type, detail) =>
+    windowRef.dispatchEvent(Object.assign(new Event(type), { detail }));
+  const plane = {
+    layerId: 'flights',
+    id: 'A1B2C3',
+    label: 'BAW123',
+    position: fromDegrees(-0.45, 51.47, 10000),
+    origin: 'user',
+  };
+  const remove = install(['https://host.example', 'https://b.example']);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  posted.length = 0;
+  select('gev:awareness-subject-selected', plane);
+  // A follow the framing page asked for is not the user's pick.
+  select('gev:awareness-subject-selected', { ...plane, origin: 'tool' });
+  select('gev:awareness-subject-selected', {
+    layerId: 'satellites',
+    id: 25544,
+    label: 'ISS (ZARYA)',
+    position: fromDegrees(10, 20, 420000),
+    origin: 'user',
+  });
+  select('gev:entity-selected', {
+    layerId: 'ais-live-vessels',
+    label: 'EVER GIVEN',
+    latitude: 30.01,
+    longitude: 32.58,
+    properties: { mmsi: '353136000' },
+  });
+  // Cameras, plate readers and anything else are never told.
+  select('gev:entity-selected', {
+    layerId: 'cctv',
+    id: 'cam-1',
+    latitude: 1,
+    longitude: 2,
+  });
+  select('gev:entity-selected', {
+    layerId: 'alpr-cameras',
+    latitude: 1,
+    longitude: 2,
+  });
+  const sent = posted.map(([message, target]) => [
+    message.kind,
+    message.id,
+    message.label,
+    Math.round(message.lat * 100) / 100,
+    Math.round(message.lon * 100) / 100,
+    target,
+  ]);
+  assert.deepEqual(sent, [
+    ['aircraft', 'a1b2c3', 'BAW123', 51.47, -0.45, 'https://host.example'],
+    ['aircraft', 'a1b2c3', 'BAW123', 51.47, -0.45, 'https://b.example'],
+    ['satellite', '25544', 'ISS (ZARYA)', 20, 10, 'https://host.example'],
+    ['satellite', '25544', 'ISS (ZARYA)', 20, 10, 'https://b.example'],
+    ['vessel', '353136000', 'EVER GIVEN', 30.01, 32.58, 'https://host.example'],
+    ['vessel', '353136000', 'EVER GIVEN', 30.01, 32.58, 'https://b.example'],
+  ]);
+  assert.ok(posted.every(([message]) => message.type === 'gev:entity'));
+  remove();
+  posted.length = 0;
+  select('gev:awareness-subject-selected', plane);
+  assert.deepEqual(posted, []);
+  // With no exact origin allowed (unset, or any page), nothing is told.
+  for (const origins of [[], ['*']]) {
+    const stop = install(origins);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    posted.length = 0;
+    select('gev:awareness-subject-selected', plane);
+    assert.deepEqual(posted, []);
+    stop();
+  }
+});
+
+test('a selection becomes an entity message only with a well-formed id and a position', () => {
+  const position = fromDegrees(1, 2, 0);
+  assert.equal(
+    entityMessage({ layerId: 'flights', id: '~1234', position }),
+    null,
+  );
+  assert.equal(entityMessage({ layerId: 'flights', id: 'abc123' }), null);
+  assert.equal(
+    entityMessage({
+      layerId: 'ais-live-vessels',
+      latitude: 1,
+      longitude: 2,
+      properties: { mmsi: null },
+    }),
+    null,
+  );
+  assert.equal(
+    entityMessage({ layerId: 'street-level', id: 'abc123', position }),
+    null,
+  );
+  assert.deepEqual(
+    Object.keys(entityMessage({ layerId: 'military', id: 'ae1234', position })),
+    ['type', 'kind', 'id', 'label', 'lat', 'lon'],
+  );
 });
 
 test('an inline panel opens a billed photo only for a view whose result is fresh', async () => {
