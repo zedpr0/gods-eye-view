@@ -187,13 +187,20 @@ function keyToast(result) {
  * Show exactly these layers, toggling only the ones that differ. `skip` is a
  * layer another step lights itself (the street-level action).
  */
-async function setLayers(layers, { dataManager, act, skip = null }) {
+async function setLayers(
+  layers,
+  { dataManager, act, skip = null, superseded = () => false },
+) {
   const wanted = new Set(layers);
   for (const layer of dataManager.getAll()) {
+    if (superseded()) return;
     if (layer.enabled && !wanted.has(layer.id))
       await act('set_layer_visibility', { layerId: layer.id, enabled: false });
   }
   for (const layerId of layers) {
+    // A newer view or layer list stops this one between layers: a layer
+    // switch never waits for a long list of layers it replaces.
+    if (superseded()) return;
     if (layerId === skip) continue;
     if (!dataManager.isEnabled(layerId))
       await act('set_layer_visibility', { layerId, enabled: true });
@@ -205,7 +212,10 @@ async function setLayers(layers, { dataManager, act, skip = null }) {
  * entity alone: a framing page's layer switches post `{ type: 'gev:layers',
  * id, layers }` instead of a whole view.
  */
-export async function applyLayers(layers, { dataManager, run }) {
+export async function applyLayers(
+  layers,
+  { dataManager, run, superseded = () => false },
+) {
   if (!Array.isArray(layers) || !layers.every((id) => typeof id === 'string'))
     throw new TypeError('Layers must be a list of layer ids');
   const steps = [];
@@ -222,7 +232,7 @@ export async function applyLayers(layers, { dataManager, run }) {
       ...(result?.error ? { error: result.error } : {}),
     });
   };
-  await setLayers(layers, { dataManager, act });
+  await setLayers(layers, { dataManager, act, superseded });
   return steps;
 }
 
@@ -235,6 +245,7 @@ export async function applyView(
     signal,
     autoOpen = true,
     retryMs = FOLLOW_RETRY_MS,
+    superseded = () => false,
   },
 ) {
   const steps = [];
@@ -258,6 +269,7 @@ export async function applyView(
     dataManager,
     act,
     skip: view.street_level ? STREET_LEVEL_LAYER : null,
+    superseded,
   });
   if (!view.follow) await act('stop_tracking', {});
   // Annotations go first: drawing them may frame the marks, and the view's
@@ -493,11 +505,15 @@ export function installViews({
     if (peer && (peer !== windowRef || isEmbeddedInline()))
       peer.postMessage(message, origin);
   };
-  // Views apply one at a time, in the order they arrive.
+  // Views apply one at a time, in the order they arrive; a newer one stops an
+  // older one's layer switching where it stands.
+  let layerGeneration = 0;
   const onMessage = (event) => {
     if (event.source !== peer) return;
     const type = event.data?.type;
     if (type !== EMBED_VIEW_MESSAGE && type !== EMBED_LAYERS_MESSAGE) return;
+    const generation = ++layerGeneration;
+    const superseded = () => generation !== layerGeneration;
     const { id = null } = event.data;
     const replyOrigin =
       isEmbeddedInline() || !event.origin || event.origin === 'null'
@@ -510,6 +526,7 @@ export function installViews({
           const steps = await applyLayers(event.data.layers, {
             dataManager,
             run,
+            superseded,
           });
           post(
             {
@@ -602,6 +619,7 @@ export function installViews({
           run,
           signal,
           autoOpen,
+          superseded,
         });
         post(
           {

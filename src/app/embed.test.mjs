@@ -62,6 +62,22 @@ test('a layers message toggles only the layers that differ', async () => {
   assert.ok(!calls.some(([name]) => name !== 'set_layer_visibility'));
 });
 
+test('a superseded layer list stops between layers', async () => {
+  const { calls, run } = recorder();
+  let stale = false;
+  const slowRun = async (name, args) => {
+    const result = await run(name, args);
+    stale = true; // a newer list arrives after the first switch
+    return result;
+  };
+  await applyLayers(['flights', 'satellites', 'earthquakes'], {
+    dataManager: fakeLayers(new Set()),
+    run: slowRun,
+    superseded: () => stale,
+  });
+  assert.equal(calls.length, 1);
+});
+
 test('a layers message refuses anything but a list of ids', async () => {
   const { run } = recorder();
   await assert.rejects(
@@ -246,6 +262,8 @@ test('an embedded page takes views only from its parent and answers it', async (
     id: 3,
     view: { camera: { lat: 1, lon: 2 }, layers: ['flights'] },
   });
+  // Let view 3 finish: a newer view would stop its layer switching.
+  await new Promise((resolve) => setTimeout(resolve, 10));
   // A view kept from before Snow was retired still applies, on Normal.
   send(parent, {
     type: 'gev:view',
