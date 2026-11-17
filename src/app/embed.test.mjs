@@ -2,6 +2,7 @@ import { bindFakeCesiumCamera } from '../testSupport/fakeCameraPort.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  applyLayers,
   applyView,
   entityMessage,
   installViews,
@@ -45,6 +46,29 @@ const recorder = (answers = {}) => {
   };
   return { calls, run, options };
 };
+
+test('a layers message toggles only the layers that differ', async () => {
+  const { calls, run } = recorder();
+  const steps = await applyLayers(['flights', 'ais-live-vessels'], {
+    dataManager: fakeLayers(new Set(['earthquakes', 'flights'])),
+    run,
+  });
+  assert.deepEqual(calls, [
+    ['set_layer_visibility', { layerId: 'earthquakes', enabled: false }],
+    ['set_layer_visibility', { layerId: 'ais-live-vessels', enabled: true }],
+  ]);
+  assert.equal(steps.length, 2);
+  // No camera flight, no annotation clearing, no stop_tracking.
+  assert.ok(!calls.some(([name]) => name !== 'set_layer_visibility'));
+});
+
+test('a layers message refuses anything but a list of ids', async () => {
+  const { run } = recorder();
+  await assert.rejects(
+    applyLayers('flights', { dataManager: fakeLayers(new Set()), run }),
+    TypeError,
+  );
+});
 
 test('embed mode is opt-in by query parameter', () => {
   assert.equal(isEmbedded({ search: '?embed=1' }), true);

@@ -34,6 +34,7 @@ const EMBED_VIEW_MESSAGE = 'gev:view';
 const EMBED_APPLIED_MESSAGE = 'gev:view-applied';
 const EMBED_READY_MESSAGE = 'gev:ready';
 const EMBED_ENTITY_MESSAGE = 'gev:entity';
+const EMBED_LAYERS_MESSAGE = 'gev:layers';
 /** The framing pages' origins, from build/embed-framing.js; none by default. */
 const PARENT_ORIGINS = import.meta.env?.GEV_EMBED_PARENT_ORIGINS ?? [];
 /** What each selectable layer's subjects are, and their ids' form. */
@@ -182,6 +183,49 @@ function keyToast(result) {
  * app's own actions (`run(name, args)`); a failed step is reported and the
  * rest still run. Resolves to the steps and whether each succeeded.
  */
+/**
+ * Show exactly these layers, toggling only the ones that differ. `skip` is a
+ * layer another step lights itself (the street-level action).
+ */
+async function setLayers(layers, { dataManager, act, skip = null }) {
+  const wanted = new Set(layers);
+  for (const layer of dataManager.getAll()) {
+    if (layer.enabled && !wanted.has(layer.id))
+      await act('set_layer_visibility', { layerId: layer.id, enabled: false });
+  }
+  for (const layerId of layers) {
+    if (layerId === skip) continue;
+    if (!dataManager.isEnabled(layerId))
+      await act('set_layer_visibility', { layerId, enabled: true });
+  }
+}
+
+/**
+ * Change only the layers, leaving the camera, annotations and any followed
+ * entity alone: a framing page's layer switches post `{ type: 'gev:layers',
+ * id, layers }` instead of a whole view.
+ */
+export async function applyLayers(layers, { dataManager, run }) {
+  if (!Array.isArray(layers) || !layers.every((id) => typeof id === 'string'))
+    throw new TypeError('Layers must be a list of layer ids');
+  const steps = [];
+  const act = async (name, args) => {
+    let result = null;
+    try {
+      result = await run(name, args);
+    } catch (error) {
+      result = { ok: false, error: error?.message || String(error) };
+    }
+    steps.push({
+      step: name,
+      ok: result?.ok !== false,
+      ...(result?.error ? { error: result.error } : {}),
+    });
+  };
+  await setLayers(layers, { dataManager, act });
+  return steps;
+}
+
 export async function applyView(
   view,
   {
@@ -210,17 +254,11 @@ export async function applyView(
   };
   if (view.style) await act('set_visual_style', { style: view.style });
   if (view.map) await act('set_map_stack', { stack: view.map });
-  const wanted = new Set(view.layers);
-  for (const layer of dataManager.getAll()) {
-    if (layer.enabled && !wanted.has(layer.id))
-      await act('set_layer_visibility', { layerId: layer.id, enabled: false });
-  }
-  for (const layerId of view.layers) {
-    // The street-level action lights its source first, then the layer.
-    if (view.street_level && layerId === STREET_LEVEL_LAYER) continue;
-    if (!dataManager.isEnabled(layerId))
-      await act('set_layer_visibility', { layerId, enabled: true });
-  }
+  await setLayers(view.layers, {
+    dataManager,
+    act,
+    skip: view.street_level ? STREET_LEVEL_LAYER : null,
+  });
   if (!view.follow) await act('stop_tracking', {});
   // Annotations go first: drawing them may frame the marks, and the view's
   // own camera should have the last word.
@@ -457,13 +495,45 @@ export function installViews({
   };
   // Views apply one at a time, in the order they arrive.
   const onMessage = (event) => {
-    if (event.source !== peer || event.data?.type !== EMBED_VIEW_MESSAGE)
-      return;
+    if (event.source !== peer) return;
+    const type = event.data?.type;
+    if (type !== EMBED_VIEW_MESSAGE && type !== EMBED_LAYERS_MESSAGE) return;
     const { id = null } = event.data;
     const replyOrigin =
       isEmbeddedInline() || !event.origin || event.origin === 'null'
         ? '*'
         : event.origin;
+    if (type === EMBED_LAYERS_MESSAGE) {
+      queue = queue
+        .then(async () => {
+          if (signal?.aborted) return;
+          const steps = await applyLayers(event.data.layers, {
+            dataManager,
+            run,
+          });
+          post(
+            {
+              type: EMBED_APPLIED_MESSAGE,
+              id,
+              ok: steps.every((step) => step.ok),
+              steps,
+            },
+            replyOrigin,
+          );
+        })
+        .catch((error) =>
+          post(
+            {
+              type: EMBED_APPLIED_MESSAGE,
+              id,
+              ok: false,
+              error: error?.message || String(error),
+            },
+            replyOrigin,
+          ),
+        );
+      return;
+    }
     let view;
     try {
       view = createView(event.data.view);
